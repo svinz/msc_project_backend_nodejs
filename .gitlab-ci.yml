@@ -1,0 +1,68 @@
+
+stages:
+  - DockerLintTest #Test to check the linting of the Dockerfile
+  - build #Building imange
+  - Deploy #For deployment
+
+lintTest-dockerfile:
+  only: #only triggers if there have been a change in the Dockerfile
+    changes:
+      - Dockerfile
+  image: docker:latest
+  stage: DockerLintTest
+  services:
+    - docker:dind	
+  script:
+    - docker run --rm -i hadolint/hadolint < Dockerfile
+    #- docker run --rm -i -v ${PWD}/LintTest/.hadolint.yaml:/.hadolint.yaml hadolint/hadolint < Dockerfile
+
+docker-build: #build from any branch
+  except: 
+    changes:  #Dont build if there is changes to following files:
+      - README.md
+      - images/*
+    # Official docker image.
+  image: docker:latest
+  stage: build
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+  script:
+    - docker build --pull -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
+  # except:
+  #   - master
+
+Deploy-manual:
+    stage: Deploy
+    image: devth/helm
+    when: manual
+    script:
+     - init_helm #run the init_helm function
+     # Run helm install with --dry-run parameter to avoid it deploying.
+     - helm upgrade -i oem-nodejs oem-nodejs/ --dry-run --set image.repository="$CI_REGISTRY_IMAGE" --set image.tag="$CI_COMMIT_REF_SLUG"
+     - helm upgrade -i oem-nodejs oem-nodejs/ --set image.repository="$CI_REGISTRY_IMAGE" --set image.tag="$CI_COMMIT_REF_SLUG"
+
+
+.functions: &functions | # a function that takes the GKE_SERVICE_ACCOUNT formatted in base64, converts it back to json, authenticates to GKE using gcloud SDK and runs helm list to verify that helm works
+  function init_helm() {
+    mkdir -p /etc/deploy 
+    echo "$GKE_SERVICE_ACCOUNT" 
+    echo $GKE_SERVICE_ACCOUNT | base64 -d > /etc/deploy/sa.json
+    echo $(cat /etc/deploy/sa.json)
+    gcloud auth activate-service-account --key-file /etc/deploy/sa.json --project="$GKE_PROJECT"
+    echo "authenticated"
+    gcloud container clusters get-credentials "$GKE_CLUSTER_NAME" --zone "$GKE_ZONE" --project "$GKE_PROJECT"
+    echo "Kubeconfig entry generated"
+    helm list
+  } 
+
+
+before_script:
+- *functions
+
+variables:
+  GKE_CLUSTER_NAME: "alexander"
+  GKE_ZONE: "europe-north1-c"
+  GKE_PROJECT: "svv-goosetown-poc"
